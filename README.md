@@ -1,3 +1,3 @@
 # mytorchcudamodules
 
-experiments with optimizing torch attention with long sequences
+experiments with optimizing torch multihead attention with long sequences
