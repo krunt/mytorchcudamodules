@@ -1,8 +1,10 @@
 
 limitations of apex-cpp:
-- seqlen is limited to 1024 (assert in cuda)
-- half type only (assert in cuda)
+- seqlen is limited to 1024 (assert in cuda code)
+- half type only (assert in cuda code)
 
+torch '1.12.0.dev20220220'
+cuda 11.3.0
 
 
 3080ti results (run_attn_bench.sh)
