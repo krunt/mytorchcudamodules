@@ -1,0 +1,12 @@
+
+limitations of apex-cpp:
+- seqlen is limited to 1024 (assert in cuda)
+- half type only (assert in cuda)
+
+
+
+3080ti results (run_attn_bench.sh)
+type=apex-cpp layers=4 seqlen=1024 seqcnt=10 hidden=1024 fwd_ms=4.455 bwd_ms=8.234 total_ms=12.689 total_mb=4312.473
+type=apex-python layers=4 seqlen=1024 seqcnt=10 hidden=1024 fwd_ms=4.502 bwd_ms=8.621 total_ms=13.124 total_mb=5216.344
+type=native layers=4 seqlen=1024 seqcnt=10 hidden=1024 fwd_ms=4.533 bwd_ms=8.817 total_ms=13.351 total_mb=4184.000
+type=lean layers=4 seqlen=1024 seqcnt=10 hidden=1024 fwd_ms=4.967 bwd_ms=9.521 total_ms=14.488 total_mb=6154.406
