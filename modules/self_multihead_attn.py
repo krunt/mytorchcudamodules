@@ -6,9 +6,7 @@ from torch.nn import Parameter
 import torch.nn.functional as F
 
 from .self_multihead_attn_func import self_attn_func
-#from .fast_self_multihead_attn_func import fast_self_attn_func
-#from .fast_self_multihead_attn_norm_add_func import fast_self_attn_norm_add_func
-from .fused_layer_norm import MixedFusedLayerNorm
+from apex.normalization.fused_layer_norm import FusedLayerNorm
 
 if hasattr(torch._C, "_jit_set_profiling_executor"):
     torch._C._jit_set_profiling_executor(False)
@@ -53,9 +51,6 @@ class SelfMultiheadAttn(nn.Module):
         self.scaling = self.head_dim ** -0.5
         self.separate_qkv_params = separate_qkv_params
         self.mask_additive = mask_additive
-
-        assert impl == "default", "no support for fast yet!"
-
         if mask_additive:
             assert self.include_norm_add == False, "additive mask not supported with layer norm"
             assert impl == "default" or (
@@ -99,7 +94,7 @@ class SelfMultiheadAttn(nn.Module):
                 self.register_parameter("lyr_norm_beta_weights", None)
                 self.lyr_nrm_gamma_weights = None
                 self.lyr_nrm_beta_weights = None
-                self.lyr_nrm = MixedFusedLayerNorm(embed_dim)
+                self.lyr_nrm = FusedLayerNorm(embed_dim)
         self.reset_parameters()
 
         if self.include_norm_add:

@@ -2,8 +2,9 @@ import torch
 import torch.nn.functional as F
 import argparse
 
-from apex.contrib.multihead_attn import SelfMultiheadAttn
+#from apex.contrib.multihead_attn import SelfMultiheadAttn
 from apex.contrib.multihead_attn import EncdecMultiheadAttn
+from modules import SelfMultiheadAttn
 
 import sys
 sys.path.append('../petabert/')
@@ -47,6 +48,8 @@ elif args.native:
 else:
     model_attn_type = 'apex-cpp'
 
+torch.cuda.cudart().cudaProfilerStart()
+
 attn_layers = []
 for idx in range(0, args.layers) :
 #    if args.encdec_attn:
@@ -89,6 +92,7 @@ for sequences in range(args.num_seqs_start, args.num_seqs_stop + args.num_seqs_i
         if evt_idx >= 0 :
             start_evt_fwd[evt_idx].record()
     
+        torch.cuda.nvtx.range_push("forward")
         for lyr_idx in range(0, args.layers) :
             if args.lean :
                 outputs, = attn_layers[lyr_idx].forward(layer_inputs.permute(1, 0, 2))
@@ -109,12 +113,15 @@ for sequences in range(args.num_seqs_start, args.num_seqs_stop + args.num_seqs_i
                                                          attn_mask=None,
                                                          is_training=True)
             layer_inputs = outputs
+        torch.cuda.nvtx.range_pop()
     
         if evt_idx >= 0 :
             start_evt_bwd[evt_idx].record()
 
+        torch.cuda.nvtx.range_push("backward")
         if not args.fwd :
             layer_inputs.backward(grads)
+        torch.cuda.nvtx.range_pop()
     
         if evt_idx >= 0 :
             stop_evt_bwd[evt_idx].record()
@@ -134,3 +141,4 @@ for sequences in range(args.num_seqs_start, args.num_seqs_stop + args.num_seqs_i
                 (elapsed_time_fwd + elapsed_time_bwd) / ( args.trials * args.layers ),
                 total_allocated))
 
+torch.cuda.cudart().cudaProfilerStop()
