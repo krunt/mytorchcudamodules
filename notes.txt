@@ -16,4 +16,7 @@ task:
 1) no explicit logic in apex cuda-attention for making buffer contiguous
    cublasGemmEx takes the storage pointer as it is (
    storage offset is took into account but not stride)
-2) 
+2) scaled_masked_softmax_cuda from apex applied to lean,
+   reduced substantially memory on softmax backward (no tmp var, immediate free ctx.softmax_results). 
+   1 in ctx, 1 - output grad, softmax in place ~ 2
+   on forward - allocate (1 on ret, 1 from mult) ~ 2
