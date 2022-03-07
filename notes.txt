@@ -1,0 +1,15 @@
+
+04.03.2022
+
+issues with lean attention:
+under jit script:
+1) adding dropout even if dropout_prob==0
+2) attention_scores & attention_probs both are nonempty in ctx
+
+task:
+1) view non-contiguous buffers how are they handled in apex attention kernel 
+2) try to use apex softmax scaled masked kernel instead of standard one,
+   as standard one is memory inefficient (tmp var)
+3) try to implement in python attention with query blocks
+
+07.03.2022
