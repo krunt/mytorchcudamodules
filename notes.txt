@@ -14,4 +14,6 @@ task:
 
 07.03.2022
 1) no explicit logic in apex cuda-attention for making buffer contiguous
-   
+   cublasGemmEx takes the storage pointer as it is (
+   storage offset is took into account but not stride)
+2) 
