@@ -13,3 +13,5 @@ task:
 3) try to implement in python attention with query blocks
 
 07.03.2022
+1) no explicit logic in apex cuda-attention for making buffer contiguous
+   
