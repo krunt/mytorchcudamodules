@@ -8,7 +8,8 @@ cuda 11.3.0
 
 
 3080ti results (run_attn_bench.sh)
-type=apex-cpp layers=4 seqlen=1024 seqcnt=10 hidden=1024 fwd_ms=4.455 bwd_ms=8.234 total_ms=12.689 total_mb=4312.473
-type=apex-python layers=4 seqlen=1024 seqcnt=10 hidden=1024 fwd_ms=4.502 bwd_ms=8.621 total_ms=13.124 total_mb=5216.344
-type=native layers=4 seqlen=1024 seqcnt=10 hidden=1024 fwd_ms=4.533 bwd_ms=8.817 total_ms=13.351 total_mb=4184.000
-type=lean layers=4 seqlen=1024 seqcnt=10 hidden=1024 fwd_ms=4.967 bwd_ms=9.521 total_ms=14.488 total_mb=6154.406
+
+type=apex-cpp layers=4 seqlen=1024 seqcnt=10 hidden=1024 fwd_ms=4.466 bwd_ms=8.269 total_ms=12.735 total_mb=4312.473
+type=native layers=4 seqlen=1024 seqcnt=10 hidden=1024 fwd_ms=3.502 bwd_ms=7.803 total_ms=11.305 total_mb=2744.000
+type=masked_lean layers=4 seqlen=1024 seqcnt=10 hidden=1024 fwd_ms=4.041 bwd_ms=6.765 total_ms=10.806 total_mb=2274.406
+type=lean layers=4 seqlen=1024 seqcnt=10 hidden=1024 fwd_ms=3.858 bwd_ms=8.097 total_ms=11.956 total_mb=2824.406
