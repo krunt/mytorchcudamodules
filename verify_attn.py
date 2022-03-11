@@ -7,7 +7,7 @@ import random
 
 import modules.initialize as minit
 
-minit.initialize(verbose=False)
+minit.initialize(verbose=False) # True)
 
 from modules import SelfMultiheadAttn
 
@@ -78,30 +78,35 @@ class CustomMultiHeadSelfAttention(nn.Module):
         #raise NotImplementedError
         return result
 
-#seq_length=1024
-#num_seqs=10
-#hidden_dim=1024
-#heads=16
+seq_length=1024
+num_seqs=10
+hidden_dim=1024
+heads=16
 
 #seq_length=2
 #num_seqs=2
 #hidden_dim=2
 #heads=2
 
-seq_length=77
-num_seqs=2
-hidden_dim=1024
-heads=16
+#seq_length=128
+#num_seqs=2
+#hidden_dim=1024
+#heads=16
 
 gtruth_mha = torch.nn.MultiheadAttention(hidden_dim, heads, bias=True, dropout=0, batch_first=True)
+gtruth_mha.half()
 
 test_mha = SelfMultiheadAttn(hidden_dim, heads, bias=True, dropout=0, include_norm_add=False, impl='default')
+test_mha.half()
+
 test_mha.in_proj_weight = gtruth_mha.in_proj_weight
 test_mha.in_proj_bias = gtruth_mha.in_proj_bias
 test_mha.out_proj_weight = gtruth_mha.out_proj.weight
 test_mha.out_proj_bias = gtruth_mha.out_proj.bias
 
 test_mha2 = CustomMultiHeadSelfAttention(embed_dim=hidden_dim, num_heads=heads, dropout=0)
+test_mha2.half()
+
 test_mha2.in_proj.weight = gtruth_mha.in_proj_weight
 test_mha2.in_proj.weight
 test_mha2.in_proj.bias = gtruth_mha.in_proj_bias
@@ -119,15 +124,15 @@ np.random.seed(0)
 random.seed(0)
 
 for _ in range(1):
-    a = torch.rand((num_seqs, seq_length, hidden_dim), device=device)
+    a = torch.rand((num_seqs, seq_length, hidden_dim), device=device).half()
     #a = torch.rand((num_seqs, seq_length, hidden_dim), device=device)
     out0 = gtruth_mha(a, a, a)[0].cpu().detach().numpy()
     out1 = test_mha(a, a, a)[0].cpu().detach().numpy()
     #out2 = test_mha2(a.transpose(0, 1)).transpose(0, 1).cpu().detach().numpy()
     #out2 = test_mha2(a.transpose(0,1)).transpose(0,1).cpu().detach().numpy()
     out2 = test_mha2(a).cpu().detach().numpy()
-    assert np.allclose(out0, out2, atol=1e-4), f"{out0} {out2}"
-    assert np.allclose(out0, out1, atol=1e-4), f"{out0} {out1}"
+    assert np.allclose(out0, out2, atol=1e-2), f"{out0} {out2}"
+    assert np.allclose(out0, out1, atol=1e-2), f"{out0} {out1}"
 
 print ("Congratulations! It works!")
 

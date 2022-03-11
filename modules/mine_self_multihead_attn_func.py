@@ -3,6 +3,8 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+from modules import scaled_masked_softmax
+
 class SelfAttnFunc(nn.Module):
     def forward(
         ctx,
@@ -36,7 +38,7 @@ class SelfAttnFunc(nn.Module):
             )
         else:
             input_lin_results = torch.mm(
-                inputs.view(inputs.size(0) * inputs.size(1), inputs.size(2)), input_weights.transpose(0, 1)
+                inputs.reshape(inputs.size(0) * inputs.size(1), inputs.size(2)), input_weights.transpose(0, 1)
             )
         input_lin_results = input_lin_results.view(inputs.size(0), inputs.size(1), input_weights.size(0))
 
@@ -65,11 +67,17 @@ class SelfAttnFunc(nn.Module):
             queries,
             keys.transpose(1, 2),
             beta=0.0,
-            alpha=scale_t[0],
+            alpha=1,
         )
         
         # output:           [seqs*heads, seql_q, seql_k]
-        softmax_results = F.softmax(matmul1_results, dim=-1)
+        #softmax_results = F.softmax(matmul1_results, dim=-1)
+        attn_mask = torch.ones((inputs.size(0), 1, inputs.size(1), inputs.size(1)), 
+                dtype=torch.uint8, device=inputs.device)
+
+        matmul1_results = matmul1_results.view(inputs.size(0), heads, inputs.size(1), inputs.size(1))
+        softmax_results = scaled_masked_softmax.scaled_masked_softmax(matmul1_results, attn_mask, scale_t[0])
+        softmax_results = softmax_results.view(inputs.size(0) * heads, inputs.size(1), inputs.size(1))
 
         matmul2_results = torch.bmm(softmax_results, values)
 
@@ -87,7 +95,7 @@ class SelfAttnFunc(nn.Module):
             )
         else:
             outputs = torch.mm(
-                matmul2_results.view(inputs.size(0) * inputs.size(1), inputs.size(2)), 
+                matmul2_results.reshape(inputs.size(0) * inputs.size(1), inputs.size(2)), 
                 output_weights.transpose(0, 1)
             )
         outputs = outputs.view(inputs.size(0), inputs.size(1), inputs.size(2))

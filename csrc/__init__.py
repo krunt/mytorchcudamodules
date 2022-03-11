@@ -44,12 +44,12 @@ def load(args):
     _create_build_dir(buildpath)
 
     # Helper function to build the kernels.
-    def _cpp_extention_load_helper(name, sources, extra_cuda_flags):
+    def _cpp_extention_load_helper(name, sources, extra_cuda_flags=[], extra_arg_flags=[]):
         return cpp_extension.load(
             name=name,
             sources=sources,
             build_directory=buildpath,
-            extra_cflags=['-O3',],
+            extra_cflags=['-O3',] + extra_arg_flags,
             extra_cuda_cflags=['-O3',
                                '-gencode', 'arch=compute_70,code=sm_70',
                                '--use_fast_math'] + extra_cuda_flags + cc_flag,
@@ -61,6 +61,19 @@ def load(args):
              srcpath / 'layer_norm_cuda_kernel.cu']
     fused_mix_prec_layer_norm_cuda = _cpp_extention_load_helper(
         "fused_mix_prec_layer_norm_cuda", sources, extra_cuda_flags)
+
+    extra_cuda_flags = [
+                        "-O3",
+                        "-U__CUDA_NO_HALF_OPERATORS__",
+                        "-U__CUDA_NO_HALF_CONVERSIONS__",
+                        "--expt-relaxed-constexpr",
+                        "--expt-extended-lambda",
+    ]
+    sources=[srcpath / 'scaled_masked_softmax.cpp',
+             srcpath / 'scaled_masked_softmax_cuda.cu']
+    apex_scaled_masked_softmax_cuda = _cpp_extention_load_helper(
+        "apex_scaled_masked_softmax_cuda", sources, extra_cuda_flags)
+
 
 
 def _get_cuda_bare_metal_version(cuda_dir):

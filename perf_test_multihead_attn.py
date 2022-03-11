@@ -110,6 +110,7 @@ for sequences in range(args.num_seqs_start, args.num_seqs_stop + args.num_seqs_i
                                                          need_weights=False, 
                                                          attn_mask=None)
             else :
+                layer_inputs = layer_inputs.permute(1, 0, 2)
                 outputs,_ = attn_layers[lyr_idx].forward(layer_inputs, 
                                                          layer_inputs, 
                                                          layer_inputs,
@@ -117,6 +118,7 @@ for sequences in range(args.num_seqs_start, args.num_seqs_stop + args.num_seqs_i
                                                          need_weights=False, 
                                                          attn_mask=None,
                                                          is_training=True)
+                outputs = outputs.permute(1, 0, 2)
             layer_inputs = outputs
         torch.cuda.nvtx.range_pop()
     
