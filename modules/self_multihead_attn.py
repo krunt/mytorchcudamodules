@@ -5,7 +5,8 @@ from torch import nn
 from torch.nn import Parameter
 import torch.nn.functional as F
 
-from .self_multihead_attn_func import self_attn_func
+#from .self_multihead_attn_func import self_attn_func
+from .mine_self_multihead_attn_func import self_attn_func
 #from .fast_self_multihead_attn_func import fast_self_attn_func
 #from .fast_self_multihead_attn_norm_add_func import fast_self_attn_norm_add_func
 from .fused_layer_norm import MixedFusedLayerNorm

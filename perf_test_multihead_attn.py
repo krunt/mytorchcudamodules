@@ -26,7 +26,7 @@ parser.add_argument('--layers', default=18, type=int, help='Attention Layers to 
 parser.add_argument('--hidden-dim', default=1024, type=int, help='Multihead Attention hidden dimension')
 parser.add_argument('--heads', default=16, type=int, help='Number of Multihead Attention heads')
 parser.add_argument('--encdec-attn', action='store_true', help='Use Encoder-Decoder Attention instead of Self Attention.')
-parser.add_argument('--norm-add', action='store_true', help='Include Layer Norm and Dropout-Add in Multihead Attention block.')
+parser.add_argument('--norm-add', action='store_false', help='Include Layer Norm and Dropout-Add in Multihead Attention block.')
 parser.add_argument('--ref', action='store_true', help='Reference implementation in python pytorch.')
 parser.add_argument('--native', action='store_true', help='torch.nn.MultitheadAttention Version.')
 parser.add_argument('--lean', action='store_true', help='use LeanSelfAttention from petabert.')
