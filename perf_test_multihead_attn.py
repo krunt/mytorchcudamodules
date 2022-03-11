@@ -2,12 +2,18 @@ import torch
 import torch.nn.functional as F
 import argparse
 
-from apex.contrib.multihead_attn import SelfMultiheadAttn
-from apex.contrib.multihead_attn import EncdecMultiheadAttn
+import modules.initialize as minit
+
+minit.initialize(verbose=False)
+
+#from apex.contrib.multihead_attn import EncdecMultiheadAttn
+#from apex.contrib.multihead_attn import SelfMultiheadAttn
+from modules import SelfMultiheadAttn
 
 import sys
 sys.path.append('../petabert/')
 from lib.modules.attn import LeanSelfAttention
+#from lib.modules.masked_attn import LeanSelfAttention
 
 parser = argparse.ArgumentParser(description='Multihead Attention Standalone Test')
 parser.add_argument('--seq-length', default=64, type=int, help='Sequence Length of Input')
@@ -47,6 +53,8 @@ elif args.native:
 else:
     model_attn_type = 'apex-cpp'
 
+torch.cuda.cudart().cudaProfilerStart()
+
 attn_layers = []
 for idx in range(0, args.layers) :
 #    if args.encdec_attn:
@@ -58,13 +66,13 @@ for idx in range(0, args.layers) :
 #            attn_layers.append(EncdecMultiheadAttn(args.hidden_dim, args.heads, dropout=0.1, bias=args.biases, include_norm_add=args.norm_add, impl='fast'))
 #    else :
     if args.lean:
-        attn_layers.append(LeanSelfAttention(args.hidden_dim, args.heads, dropout=0.1, residual=False, checkpoint_attention_core=False))
+        attn_layers.append(LeanSelfAttention(args.hidden_dim, args.heads, residual=False, checkpoint_attention_core=False))
     elif args.native:
-        attn_layers.append(torch.nn.MultiheadAttention(args.hidden_dim, args.heads, dropout=0.1, bias=args.biases))
+        attn_layers.append(torch.nn.MultiheadAttention(args.hidden_dim, args.heads, bias=args.biases))
     elif args.ref:
-        attn_layers.append(SelfMultiheadAttn(args.hidden_dim, args.heads, dropout=0.1, bias=args.biases, include_norm_add=args.norm_add, impl='default'))
+        attn_layers.append(SelfMultiheadAttn(args.hidden_dim, args.heads, bias=args.biases, include_norm_add=args.norm_add, impl='default'))
     else :
-        attn_layers.append(SelfMultiheadAttn(args.hidden_dim, args.heads, dropout=0.1, bias=args.biases, include_norm_add=args.norm_add, impl='fast'))
+        attn_layers.append(SelfMultiheadAttn(args.hidden_dim, args.heads, bias=args.biases, include_norm_add=args.norm_add, impl='fast'))
     attn_layers[idx].cuda()
     attn_layers[idx].half()
     if not (args.native or args.lean):
@@ -89,6 +97,7 @@ for sequences in range(args.num_seqs_start, args.num_seqs_stop + args.num_seqs_i
         if evt_idx >= 0 :
             start_evt_fwd[evt_idx].record()
     
+        torch.cuda.nvtx.range_push("forward")
         for lyr_idx in range(0, args.layers) :
             if args.lean :
                 outputs, = attn_layers[lyr_idx].forward(layer_inputs.permute(1, 0, 2))
@@ -109,12 +118,15 @@ for sequences in range(args.num_seqs_start, args.num_seqs_stop + args.num_seqs_i
                                                          attn_mask=None,
                                                          is_training=True)
             layer_inputs = outputs
+        torch.cuda.nvtx.range_pop()
     
         if evt_idx >= 0 :
             start_evt_bwd[evt_idx].record()
 
+        torch.cuda.nvtx.range_push("backward")
         if not args.fwd :
             layer_inputs.backward(grads)
+        torch.cuda.nvtx.range_pop()
     
         if evt_idx >= 0 :
             stop_evt_bwd[evt_idx].record()
@@ -134,3 +146,4 @@ for sequences in range(args.num_seqs_start, args.num_seqs_stop + args.num_seqs_i
                 (elapsed_time_fwd + elapsed_time_bwd) / ( args.trials * args.layers ),
                 total_allocated))
 
+torch.cuda.cudart().cudaProfilerStop()
