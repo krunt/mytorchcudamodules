@@ -20,8 +20,12 @@ import time
 import numpy as np
 import torch
 
+from . import scaled_masked_softmax
+
 from csrc import load
 
 def initialize(**kwargs):
     load(kwargs)
+    scaled_masked_softmax.initialize()
+
 

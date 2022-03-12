@@ -7,7 +7,7 @@ import random
 
 import modules.initialize as minit
 
-minit.initialize(verbose=False) # True)
+minit.initialize(verbose=True) # True)
 
 from modules import SelfMultiheadAttn
 
@@ -78,9 +78,9 @@ class CustomMultiHeadSelfAttention(nn.Module):
         #raise NotImplementedError
         return result
 
-seq_length=1024
-num_seqs=10
-hidden_dim=1024
+seq_length=64
+num_seqs=8
+hidden_dim=128
 heads=16
 
 #seq_length=2
@@ -123,16 +123,20 @@ torch.manual_seed(0)
 np.random.seed(0)
 random.seed(0)
 
-for _ in range(1):
+for _ in range(10):
     a = torch.rand((num_seqs, seq_length, hidden_dim), device=device).half()
     #a = torch.rand((num_seqs, seq_length, hidden_dim), device=device)
-    out0 = gtruth_mha(a, a, a)[0].cpu().detach().numpy()
-    out1 = test_mha(a, a, a)[0].cpu().detach().numpy()
-    #out2 = test_mha2(a.transpose(0, 1)).transpose(0, 1).cpu().detach().numpy()
-    #out2 = test_mha2(a.transpose(0,1)).transpose(0,1).cpu().detach().numpy()
-    out2 = test_mha2(a).cpu().detach().numpy()
-    assert np.allclose(out0, out2, atol=1e-2), f"{out0} {out2}"
-    assert np.allclose(out0, out1, atol=1e-2), f"{out0} {out1}"
+    out0 = gtruth_mha(a, a, a)[0]
+    out1 = test_mha(a, a, a)[0]
+    out2 = test_mha2(a)
+    out0.mean().backward()
+    out1.mean().backward()
+    out2.mean().backward()
+    out0 = out0.cpu().detach().numpy()
+    out1 = out1.cpu().detach().numpy()
+    out2 = out2.cpu().detach().numpy()
+    assert np.allclose(out0, out2, atol=1e-1), f"{out0} {out2}"
+    assert np.allclose(out0, out1, atol=1e-1), f"{out0} {out1}"
 
 print ("Congratulations! It works!")
 

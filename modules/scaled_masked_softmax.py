@@ -24,9 +24,10 @@ class ScaledMaskedSoftmax(torch.autograd.Function):
 
 
 def scaled_masked_softmax(inputs, mask, scale):
+    # input is 4D tensor (b, np, sq, sk)
+    return ScaledMaskedSoftmax.apply(inputs, mask, scale)
+
+def initialize():
     global apex_scaled_masked_softmax_cuda
     apex_scaled_masked_softmax_cuda = importlib.import_module(
           "apex_scaled_masked_softmax_cuda")
-
-    # input is 4D tensor (b, np, sq, sk)
-    return ScaledMaskedSoftmax.apply(inputs, mask, scale)

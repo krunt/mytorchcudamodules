@@ -13,7 +13,7 @@ from modules import SelfMultiheadAttn
 import sys
 sys.path.append('../petabert/')
 from lib.modules.attn import LeanSelfAttention
-#from lib.modules.masked_attn import LeanSelfAttention
+from lib.modules.masked_attn import MaskedLeanSelfAttention
 
 parser = argparse.ArgumentParser(description='Multihead Attention Standalone Test')
 parser.add_argument('--seq-length', default=64, type=int, help='Sequence Length of Input')
@@ -30,6 +30,7 @@ parser.add_argument('--norm-add', action='store_false', help='Include Layer Norm
 parser.add_argument('--ref', action='store_true', help='Reference implementation in python pytorch.')
 parser.add_argument('--native', action='store_true', help='torch.nn.MultitheadAttention Version.')
 parser.add_argument('--lean', action='store_true', help='use LeanSelfAttention from petabert.')
+parser.add_argument('--masked-lean', action='store_true', help='use LeanSelfAttention from petabert.')
 parser.add_argument('--fwd', action='store_true', help='Only execute Fwd Pass.')
 parser.add_argument('--biases', action='store_true', help='Execute multihead attention with Linear Biases.')
 
@@ -46,6 +47,8 @@ if torch.cuda.is_available():
 model_attn_type = ''
 if args.lean:
     model_attn_type = 'lean'
+elif args.masked_lean:
+    model_attn_type = 'masked-lean'
 elif args.ref:
     model_attn_type = 'apex-python'
 elif args.native:
@@ -67,6 +70,8 @@ for idx in range(0, args.layers) :
 #    else :
     if args.lean:
         attn_layers.append(LeanSelfAttention(args.hidden_dim, args.heads, residual=False, checkpoint_attention_core=False))
+    elif args.masked_lean:
+        attn_layers.append(MaskedLeanSelfAttention(args.hidden_dim, args.heads, residual=False, checkpoint_attention_core=False))
     elif args.native:
         attn_layers.append(torch.nn.MultiheadAttention(args.hidden_dim, args.heads, bias=args.biases))
     elif args.ref:
@@ -75,7 +80,7 @@ for idx in range(0, args.layers) :
         attn_layers.append(SelfMultiheadAttn(args.hidden_dim, args.heads, bias=args.biases, include_norm_add=args.norm_add, impl='fast'))
     attn_layers[idx].cuda()
     attn_layers[idx].half()
-    if not (args.native or args.lean):
+    if not (args.native or args.lean or args.masked_lean):
         attn_layers[idx].reset_parameters()
 
 start_evt_fwd = []
@@ -99,7 +104,7 @@ for sequences in range(args.num_seqs_start, args.num_seqs_stop + args.num_seqs_i
     
         torch.cuda.nvtx.range_push("forward")
         for lyr_idx in range(0, args.layers) :
-            if args.lean :
+            if args.lean or args.masked_lean:
                 outputs, = attn_layers[lyr_idx].forward(layer_inputs.permute(1, 0, 2))
                 outputs = outputs.permute(1, 0, 2)
             elif args.native :
