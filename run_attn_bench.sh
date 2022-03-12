@@ -16,6 +16,7 @@ heads=16
 
 
 for attn_type in '--ref' '--masked-lean' '--lean' '--native' ; do 
+#for attn_type in '--ref' ; do
 
   python3 perf_test_multihead_attn.py --seq-length=$seq_length --num-seqs-start=$num_seqs_start --num-seqs-stop=$num_seqs_stop --layers=$layers --hidden-dim=$hidden_dim --heads=$heads --norm-add $attn_type
 

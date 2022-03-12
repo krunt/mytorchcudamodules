@@ -5,6 +5,9 @@ import torch.nn.functional as F
 
 from modules import scaled_masked_softmax
 
+STEPS_PER_BATCH = 8
+
+#class SelfAttnFunc(nn.Module):
 class SelfAttnFunc(torch.autograd.Function):
     @staticmethod
     def forward(
@@ -56,32 +59,41 @@ class SelfAttnFunc(torch.autograd.Function):
 
         # [seqs, 
         #print('aqkv', queries, keys, values)
-
-        matmul1_results = torch.empty(
-            (queries.size(0), queries.size(1), keys.size(1)), dtype=queries.dtype, device=inputs.device
+        matmul2_results = torch.empty(
+            (inputs.size(0) * heads, inputs.size(1), head_dim), dtype=queries.dtype, device=inputs.device
         )
 
-        # output:           [seqs*heads, seql_q, seql_k]
-        matmul1_results = torch.baddbmm(
-            matmul1_results,
-            queries,
-            keys.transpose(1, 2),
-            beta=0.0,
-            alpha=1,
-        )
-        
-        # output:           [seqs*heads, seql_q, seql_k]
-        #softmax_results = F.softmax(matmul1_results, dim=-1)
-        attn_mask = torch.ones((inputs.size(0), 1, inputs.size(1), inputs.size(1)), 
-                dtype=torch.uint8, device=inputs.device)
+        iter_step = STEPS_PER_BATCH
+        iter_count = inputs.size(0) * heads
+        for iter_idx in range(0, iter_count, iter_step):
+            ibatch_range = [iter_idx, min(iter_idx + iter_step, iter_count)]
+            ibatch_sz = ibatch_range[1] - ibatch_range[0]
 
-        matmul1_results = matmul1_results.view(inputs.size(0), heads, inputs.size(1), inputs.size(1))
-
-        softmax_results = scaled_masked_softmax.apex_scaled_masked_softmax_cuda.forward(matmul1_results, attn_mask, scale_t[0])
-
-        softmax_results = softmax_results.view(inputs.size(0) * heads, inputs.size(1), inputs.size(1))
-
-        matmul2_results = torch.bmm(softmax_results, values)
+            matmul1_results = torch.empty(
+                (ibatch_sz, queries.size(1), keys.size(1)), dtype=queries.dtype, device=inputs.device
+            )
+    
+            # output:           [seqs*heads, seql_q, seql_k]
+            matmul1_results = torch.baddbmm(
+                matmul1_results,
+                queries[ibatch_range[0]:ibatch_range[1], :, :],
+                keys[ibatch_range[0]:ibatch_range[1], :, :].transpose(1, 2),
+                beta=0.0,
+                alpha=1,
+            )
+            
+            # output:           [seqs*heads, seql_q, seql_k]
+            #softmax_results = F.softmax(matmul1_results, dim=-1)
+            attn_mask = torch.ones((1, 1, inputs.size(1), inputs.size(1)), 
+                    dtype=torch.uint8, device=inputs.device)
+    
+            matmul1_results = matmul1_results.view(ibatch_sz, 1, inputs.size(1), inputs.size(1))
+    
+            softmax_results = scaled_masked_softmax.apex_scaled_masked_softmax_cuda.forward(matmul1_results, attn_mask, scale_t[0]).view(ibatch_sz, inputs.size(1), inputs.size(1))
+    
+            matmul2_results[ibatch_range[0]:ibatch_range[1], :, :] = torch.bmm(
+                    softmax_results,
+                    values[ibatch_range[0]:ibatch_range[1], :, :])
 
         matmul2_results = matmul2_results.reshape(inputs.size(0), heads, inputs.size(1), head_dim) \
                           .transpose(1, 2).reshape(inputs.size(0), inputs.size(1), inputs.size(2))
@@ -106,15 +118,14 @@ class SelfAttnFunc(torch.autograd.Function):
             use_biases_t,
             heads_t,
             scale_t,
-            matmul2_results,
-            softmax_results,
-            input_lin_results,
-            inputs,
-            input_weights,
-            output_weights,
+            matmul2_results, # 64M
+            input_lin_results, # 64M*3
+            inputs, # 64M
+            input_weights, # 24
+            output_weights, # 8
         )
 
-        return outputs.detach()
+        return outputs.detach() # 64M
 
     @staticmethod
     def backward(ctx, output_grads):
@@ -123,7 +134,6 @@ class SelfAttnFunc(torch.autograd.Function):
             heads_t,
             scale_t,
             matmul2_results,
-            softmax_results,
             input_lin_results,
             inputs,
             input_weights,
@@ -175,39 +185,74 @@ class SelfAttnFunc(torch.autograd.Function):
             output_bias_grads = None
 
 
-        # output_lin_grads  [ seqs * heads, seql, head_dim ]
-        # values [ seqs * heads, seql, head_dim ]
-        # output: [ seqs * heads, seql, seql ]
-        matmul2_dgrad1 = torch.bmm(output_lin_grads, values.transpose(1, 2))
+        iter_step = STEPS_PER_BATCH
+        iter_count = inputs.size(0) * heads
+        for iter_idx in range(0, iter_count, iter_step):
+            ibatch_range = [iter_idx, min(iter_idx + iter_step, iter_count)]
+            ibatch_sz = ibatch_range[1] - ibatch_range[0]
 
-        # softmax_results [ seqs * heads, seql, seql ]
-        # output_lin_grads  [ seqs * heads, seql, head_dim ]
-        # output: [ seqs * heads, seql, head_dim ]
-        values_grads = torch.bmm(softmax_results.transpose(1, 2), output_lin_grads)
+            # reconstruct softmax_results
+            matmul1_results = torch.empty(
+                (ibatch_sz, queries.size(1), keys.size(1)), dtype=queries.dtype, device=inputs.device
+            )
+    
+            # output:           [seqs*heads, seql_q, seql_k]
+            matmul1_results = torch.baddbmm(
+                matmul1_results,
+                queries[ibatch_range[0]:ibatch_range[1], :, :],
+                keys[ibatch_range[0]:ibatch_range[1], :, :].transpose(1, 2),
+                beta=0.0,
+                alpha=1,
+            )
+            
+            # output:           [seqs*heads, seql_q, seql_k]
+            #softmax_results = F.softmax(matmul1_results, dim=-1)
+            attn_mask = torch.ones((1, 1, inputs.size(1), inputs.size(1)), 
+                    dtype=torch.uint8, device=inputs.device)
+    
+            matmul1_results = matmul1_results.view(ibatch_sz, 1, inputs.size(1), inputs.size(1))
+    
+            softmax_results = scaled_masked_softmax.apex_scaled_masked_softmax_cuda.forward(matmul1_results, 
+                    attn_mask, scale_t[0]).view(ibatch_sz, inputs.size(1), inputs.size(1))
 
-        # output: [ seqs * heads, seql, seql ]
-        softmax_grads = scaled_masked_softmax.apex_scaled_masked_softmax_cuda.backward(
-                matmul2_dgrad1.view(inputs.size(0), heads, inputs.size(1), inputs.size(1)), 
-                softmax_results.view(inputs.size(0), heads, inputs.size(1), inputs.size(1)),
-                scale_t[0])
-
-        softmax_grads = softmax_grads.view(inputs.size(0) * heads, inputs.size(1), inputs.size(1))
-
-        queries_grads = torch.baddbmm(
-            queries_grads,
-            softmax_grads,
-            keys,
-            beta=0.0,
-            alpha=scale_t[0],
-        )
-
-        keys_grads = torch.baddbmm(
-            keys_grads,
-            softmax_grads.transpose(1, 2),
-            queries,
-            beta=0.0,
-            alpha=scale_t[0],
-        )
+            # output_lin_grads  [ seqs * heads, seql, head_dim ]
+            # values [ seqs * heads, seql, head_dim ]
+            # output: [ seqs * heads, seql, seql ]
+            matmul2_dgrad1 = torch.bmm(output_lin_grads[ibatch_range[0]:ibatch_range[1], :, :],
+                    values[ibatch_range[0]:ibatch_range[1], :, :].transpose(1, 2))
+    
+            # softmax_results [ seqs * heads, seql, seql ]
+            # output_lin_grads  [ seqs * heads, seql, head_dim ]
+            # output: [ seqs * heads, seql, head_dim ]
+            #print(iter_idx, iter_step, iter_count, softmax_results.shape)
+            #print(output_lin_grads[ibatch_range[0]:ibatch_range[1], :, :].shape)
+            values_grads[ibatch_range[0]:ibatch_range[1], :, :] = torch.bmm(
+                    softmax_results.transpose(1, 2), 
+                    output_lin_grads[ibatch_range[0]:ibatch_range[1], :, :])
+    
+            # output: [ seqs * heads, seql, seql ]
+            softmax_grads = scaled_masked_softmax.apex_scaled_masked_softmax_cuda.backward(
+                    matmul2_dgrad1.view(ibatch_sz, 1, inputs.size(1), inputs.size(1)), 
+                    softmax_results.view(ibatch_sz, 1, inputs.size(1), inputs.size(1)),
+                    scale_t[0])
+    
+            softmax_grads = softmax_grads.view(ibatch_sz, inputs.size(1), inputs.size(1))
+    
+            queries_grads[ibatch_range[0]:ibatch_range[1], :, :] = torch.baddbmm(
+                queries_grads[ibatch_range[0]:ibatch_range[1], :, :],
+                softmax_grads,
+                keys[ibatch_range[0]:ibatch_range[1], :, :],
+                beta=0.0,
+                alpha=scale_t[0],
+            )
+    
+            keys_grads[ibatch_range[0]:ibatch_range[1], :, :] = torch.baddbmm(
+                keys_grads[ibatch_range[0]:ibatch_range[1], :, :],
+                softmax_grads.transpose(1, 2),
+                queries[ibatch_range[0]:ibatch_range[1], :, :],
+                beta=0.0,
+                alpha=scale_t[0],
+            )
 
         # [ seqs * heads, seql, head_dim ]
         input_lin_results_grads = input_lin_results_grads.view(inputs.size(0), heads, inputs.size(1), 3, head_dim) \
@@ -241,3 +286,4 @@ class SelfAttnFunc(torch.autograd.Function):
 
 
 self_attn_func = SelfAttnFunc.apply
+#self_attn_func = SelfAttnFunc()
