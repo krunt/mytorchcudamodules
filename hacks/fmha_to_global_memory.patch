@@ -1,0 +1,1095 @@
+diff --git a/apex/contrib/csrc/fmha/src/fmha/smem_tile.h b/apex/contrib/csrc/fmha/src/fmha/smem_tile.h
+index 8087914..895a826 100644
+--- a/apex/contrib/csrc/fmha/src/fmha/smem_tile.h
++++ b/apex/contrib/csrc/fmha/src/fmha/smem_tile.h
+@@ -114,8 +114,10 @@ struct Smem_tile_without_skews {
+     using Store_type = typename Uint_from_size_in_bytes<BYTES_PER_STS>::Type;
+ 
+     // Ctor.
+-    inline __device__ Smem_tile_without_skews(void *smem, int tidx) 
+-        : smem_(__nvvm_get_smem_pointer(smem)) {
++    inline __device__ Smem_tile_without_skews(void *smem, int tidx, char *base_smem) 
++        : smem_(reinterpret_cast<uint32_t>(smem)) { // __nvvm_get_smem_pointer(smem)) {
++
++        base_smem_ = base_smem;
+ 
+         // The row written by a thread. See doc/mma_smem_layout.xlsx.
+         int smem_write_row = tidx / THREADS_PER_ROW;
+@@ -167,7 +169,7 @@ struct Smem_tile_without_skews {
+             for( int col = 0; col < BYTES_PER_ROW; col += 4 ) {
+                 if( threadIdx.x == 0 ) {
+                     uint32_t val = 0x0;
+-                    sts(val, smem_ + row*BYTES_PER_ROW + col + buffer);
++                    sts(val, smem_ + row*BYTES_PER_ROW + col + buffer, base_smem_);
+                 }
+             }
+         }
+@@ -181,7 +183,7 @@ struct Smem_tile_without_skews {
+             for( int col = 0; col < BYTES_PER_ROW; col += 4 ) {
+                 if( threadIdx.x == 0 ) {
+                     uint32_t val;
+-                    lds(val, smem_ + row*BYTES_PER_ROW + col + buffer);
++                    lds(val, smem_ + row*BYTES_PER_ROW + col + buffer, base_smem_);
+                     printf("block=(x=%2d, y=%2d, z=%2d) (smem_=%2d, buffer=%2d, row=%2d, byte=%4d)=0x%08x\n",
+                         blockIdx.x,
+                         blockIdx.y,
+@@ -253,7 +255,7 @@ struct Smem_tile_without_skews {
+     inline __device__ void store(const Store_type (&data)[N], uint64_t = 0) {
+         uint32_t smem_ptrs[N];
+         this->compute_store_pointers(smem_ptrs);
+-        sts(smem_ptrs, data);
++        sts(smem_ptrs, data, base_smem_);
+     }
+ 
+     // Store to the tile in shared memory.
+@@ -261,7 +263,7 @@ struct Smem_tile_without_skews {
+     inline __device__ void store(const Store_type (&data)[N], uint32_t (&preds)[M], uint64_t = 0) {
+         uint32_t smem_ptrs[N];
+         this->compute_store_pointers(smem_ptrs);
+-        sts(smem_ptrs, data, preds);
++        sts(smem_ptrs, data, preds, base_smem_);
+     }
+ 
+     // Store to the tile in shared memory.
+@@ -277,6 +279,7 @@ struct Smem_tile_without_skews {
+         this->store(gmem_ptrs, tmp);
+     }
+ 
++    char *base_smem_;
+     // The shared memory pointer.
+     uint32_t smem_;
+     // The read offset. Reserve 4 offsets if needed.
+@@ -392,11 +395,15 @@ struct Smem_tile_row_a : public Smem_tile_without_skews<Cta_tile,
+     // The size of a single LDS in bytes.
+     enum { BYTES_PER_LDS = 16 };
+ 
++    char *base_smem_;
++
+     // Ctor.
+-    inline __device__ Smem_tile_row_a(void *smem, int tidx) : Base(smem, tidx) {
++    inline __device__ Smem_tile_row_a(void *smem, int tidx, char *base_smem) : Base(smem, tidx, base_smem) {
+ 
+         // For documentation on the layout, see doc/mma_smem_layout.xlsx.
+ 
++        base_smem_ = base_smem;
++
+         // The number of warps.
+         const int WARPS_M = Cta_tile::WARPS_M;
+         const int WARPS_N = Cta_tile::WARPS_N;
+@@ -434,7 +441,14 @@ struct Smem_tile_row_a : public Smem_tile_without_skews<Cta_tile,
+ 
+             // Load using LDSM.M88.4.
+             uint4 tmp;
+-            ldsm(tmp, this->smem_ + this->smem_read_offset_ + this->smem_read_buffer_ + offset);
++            // ldsm(tmp, this->smem_ + this->smem_read_offset_ + this->smem_read_buffer_ + offset, base_smem_);
++
++            uint32_t ptr = this->smem_ + this->smem_read_offset_ + this->smem_read_buffer_ + offset;
++
++            lds(tmp.x, (ptr     ) + 0*Base::BYTES_PER_ROW, base_smem_);
++            lds(tmp.y, (ptr ^ 32) + 0*Base::BYTES_PER_ROW, base_smem_);
++            lds(tmp.z, (ptr     ) + 4*Base::BYTES_PER_ROW, base_smem_);
++            lds(tmp.w, (ptr ^ 32) + 4*Base::BYTES_PER_ROW, base_smem_);
+ 
+             // Store the value into the fragment.
+             a[mi].reg(0) = tmp.x;
+@@ -491,7 +505,7 @@ struct Smem_tile_a<Cta_tile, Row, BYTES_PER_STS, BUFFERS_PER_TILE>
+     using Base = Smem_tile_row_a<Cta_tile, BYTES_PER_STS, BUFFERS_PER_TILE>;
+ 
+     // Ctor.
+-    inline __device__ Smem_tile_a(void *smem, int tidx) : Base(smem, tidx) {
++    inline __device__ Smem_tile_a(void *smem, int tidx, char *base_smem) : Base(smem, tidx, base_smem) {
+     }
+ };
+ 
+@@ -577,10 +591,13 @@ struct Smem_tile_col_b : public Smem_tile_without_skews<Cta_tile,
+     // The number of STS per thread must be at least 1.
+     enum { STS_PER_THREAD = Max<1, STS_PER_THREAD_>::VALUE };
+ 
++    char *base_smem_;
++
+     // Ctor.
+-    inline __device__ Smem_tile_col_b(void *smem, int tidx) : Base(smem, tidx) {
++    inline __device__ Smem_tile_col_b(void *smem, int tidx, char *base_smem) : Base(smem, tidx, base_smem) {
+ 
+         // For documentation on the layout, see doc/mma_smem_layout.xlsx.
++        base_smem_ = base_smem;
+ 
+         // The number of warps.
+         const int WARPS_M = Cta_tile::WARPS_M;
+@@ -625,7 +642,14 @@ struct Smem_tile_col_b : public Smem_tile_without_skews<Cta_tile,
+ 
+             // Load using LDSM.M88.4.
+             uint4 tmp;
+-            ldsm(tmp, this->smem_ + this->smem_read_offset_ + this->smem_read_buffer_ + offset);
++            // ldsm(tmp, this->smem_ + this->smem_read_offset_ + this->smem_read_buffer_ + offset, base_smem_);
++
++            uint32_t ptr = this->smem_ + this->smem_read_offset_ + this->smem_read_buffer_ + offset;
++            
++            lds(tmp.x, (ptr     ) + 0*Base::BYTES_PER_ROW, base_smem_);
++            lds(tmp.y, (ptr ^ 32) + 0*Base::BYTES_PER_ROW, base_smem_);
++            lds(tmp.z, (ptr     ) + 4*Base::BYTES_PER_ROW, base_smem_);
++            lds(tmp.w, (ptr ^ 32) + 4*Base::BYTES_PER_ROW, base_smem_);
+ 
+             // Store the value into the fragment.
+             b[ni].reg(0) = tmp.x;
+@@ -682,7 +706,7 @@ struct Smem_tile_b< Cta_tile, Col, BYTES_PER_STS, BUFFERS_PER_TILE >
+     using Base = Smem_tile_col_b< Cta_tile, BYTES_PER_STS, BUFFERS_PER_TILE>;
+ 
+     // Ctor.
+-    inline __device__ Smem_tile_b(void *smem, int tidx) : Base(smem, tidx) {
++    inline __device__ Smem_tile_b(void *smem, int tidx, char *base_smem) : Base(smem, tidx, base_smem) {
+     }
+ };
+ 
+@@ -744,8 +768,11 @@ struct Smem_tile_row_b : public Smem_tile_without_skews<Cta_tile,
+     // The number of STS per thread must be at least 1.
+     enum { STS_PER_THREAD = Max<1, STS_PER_THREAD_>::VALUE };
+ 
++    char *base_smem_;
++
+     // Ctor.
+-    inline __device__ Smem_tile_row_b(void *smem, int tidx) : Base(smem, tidx) {
++    inline __device__ Smem_tile_row_b(void *smem, int tidx, char *base_smem) : Base(smem, tidx, base_smem) {
++        base_smem_ = base_smem;
+ 
+         // The number of warps.
+         const int WARPS_M = Cta_tile::WARPS_M;
+@@ -833,13 +860,13 @@ struct Smem_tile_row_b : public Smem_tile_without_skews<Cta_tile,
+             // Load the data using LDSM.MT88.2.
+             uint32_t ptr = this->smem_ + this->smem_read_buffer_ + offset;
+             uint4 tmp;
+-            if( USE_LDSMT ) {
+-                ldsmt(tmp, ptr);
++            if( 0 ) {
++                // ldsmt(tmp, ptr, base_smem_);
+             } else {
+-                lds(tmp.x, (ptr     ) + 0*Base::BYTES_PER_ROW);
+-                lds(tmp.y, (ptr     ) + 4*Base::BYTES_PER_ROW);
+-                lds(tmp.z, (ptr ^ 32) + 0*Base::BYTES_PER_ROW);
+-                lds(tmp.w, (ptr ^ 32) + 4*Base::BYTES_PER_ROW);
++                lds(tmp.x, (ptr     ) + 0*Base::BYTES_PER_ROW, base_smem_);
++                lds(tmp.y, (ptr     ) + 4*Base::BYTES_PER_ROW, base_smem_);
++                lds(tmp.z, (ptr ^ 32) + 0*Base::BYTES_PER_ROW, base_smem_);
++                lds(tmp.w, (ptr ^ 32) + 4*Base::BYTES_PER_ROW, base_smem_);
+             }
+ 
+             // Store those values in the fragment.
+@@ -889,7 +916,7 @@ struct Smem_tile_b<Cta_tile, Row, BYTES_PER_STS, BUFFERS_PER_TILE>
+     using Base = Smem_tile_row_b<Cta_tile, BYTES_PER_STS, BUFFERS_PER_TILE>;
+ 
+     // Ctor.
+-    inline __device__ Smem_tile_b(void *smem, int tidx) : Base(smem, tidx) {
++    inline __device__ Smem_tile_b(void *smem, int tidx, char *base_smem) : Base(smem, tidx, base_smem) {
+     }
+ };
+ 
+@@ -908,8 +935,12 @@ struct Smem_tile_v : public fmha::Smem_tile_without_skews<Cta_tile, Cta_tile::K,
+     // The size of a single LDS in bytes.
+     enum { BYTES_PER_LDS = 16 };
+ 
++    char *base_smem_;
++
+     // Ctor.
+-    inline __device__ Smem_tile_v(void *smem, int tidx) : Base(smem, tidx) {
++    inline __device__ Smem_tile_v(void *smem, int tidx, char *base_smem) : Base(smem, tidx, base_smem) {
++
++        base_smem_ = base_smem;
+ 
+         // The row/col read by the thread.
+         int read_row, read_col;
+@@ -933,7 +964,16 @@ struct Smem_tile_v : public fmha::Smem_tile_without_skews<Cta_tile, Cta_tile::K,
+ 
+             // Load the data using LDSM.MT88.2.
+             uint4 tmp;
+-            fmha::ldsmt(tmp, this->smem_ + this->smem_read_offset_ + row * Base::BYTES_PER_ROW);
++            
++            // fmha::ldsmt(tmp, this->smem_ + this->smem_read_offset_ + row * Base::BYTES_PER_ROW, base_smem_);
++
++            uint32_t ptr = this->smem_ + this->smem_read_offset_ + row * Base::BYTES_PER_ROW;
++
++            lds(tmp.x, (ptr     ) + 0*Base::BYTES_PER_ROW, base_smem_);
++            lds(tmp.y, (ptr     ) + 4*Base::BYTES_PER_ROW, base_smem_);
++            lds(tmp.z, (ptr ^ 32) + 0*Base::BYTES_PER_ROW, base_smem_);
++            lds(tmp.w, (ptr ^ 32) + 4*Base::BYTES_PER_ROW, base_smem_);
++
+             b[ni].reg(0) = tmp.x;
+             b[ni].reg(1) = tmp.y;
+             b[ni].reg(2) = tmp.z;
+@@ -992,6 +1032,7 @@ struct Smem_tile_o {
+     enum { BYTES_PER_TILE = ROWS_PER_LOOP * BYTES_PER_ROW };
+ 
+     // The write pointer.
++    char *base_smem_;
+     uint32_t smem_write_, smem_read_;
+     // Is the thread active for the last LDS of the series?
+     int is_active_for_last_lds_;
+@@ -1000,10 +1041,12 @@ struct Smem_tile_o {
+     static_assert(LOOPS == 1 || LOOPS == (int)Mma_tile::MMAS_M, "");
+ 
+     // Ctor.
+-    inline __device__ Smem_tile_o(void *smem, int tidx) {
++    inline __device__ Smem_tile_o(void *smem, int tidx, char *base_smem) {
++
++        base_smem_ = base_smem;
+ 
+         // Get a 32-bit value for the shared memory address.
+-        uint32_t smem_ = __nvvm_get_smem_pointer(smem);
++        uint32_t smem_ = reinterpret_cast<uint32_t>(smem); //__nvvm_get_smem_pointer(smem);
+ 
+         static_assert(Cta_tile::WARPS_M == 1 && Cta_tile::WARPS_N == 1 && (Cta_tile::WARPS_K == 4 || Cta_tile::WARPS_K == 8));
+ 
+@@ -1040,7 +1083,7 @@ struct Smem_tile_o {
+             for( int jj = 0; jj < Cta_tile::WARPS_K; ++jj ) {
+                 int imm = ii * ROWS_PER_LDS * BYTES_PER_ROW + jj * Cta_tile::N * BYTES_PER_ELEMENT;
+                 if( !HAS_INCOMPLETE_LDS || (ii < LDS_PER_LOOP - 1 || this->is_active_for_last_lds_) ) {
+-                    fmha::lds(tmp[jj], this->smem_read_ + imm);
++                    fmha::lds(tmp[jj], this->smem_read_ + imm, base_smem_);
+                 }
+             }
+ 
+@@ -1076,8 +1119,8 @@ struct Smem_tile_o {
+                 tmp1.y = acc[mi * MMAS_M_PER_LOOP + mj][ni].reg(3);
+ 
+                 // Store.
+-                fmha::sts(this->smem_write_ + row_0, tmp0);
+-                fmha::sts(this->smem_write_ + row_1, tmp1);
++                fmha::sts(this->smem_write_ + row_0, tmp0, base_smem_);
++                fmha::sts(this->smem_write_ + row_1, tmp1, base_smem_);
+             }
+ 
+             // Swizzle the write pointer using a XOR of 16B.
+@@ -1097,8 +1140,8 @@ struct Smem_tile_o {
+                 tmp1.x = acc[mi * MMAS_M_PER_LOOP + mj][ni].reg(6);
+                 tmp1.y = acc[mi * MMAS_M_PER_LOOP + mj][ni].reg(7);
+                 // Store.
+-                fmha::sts(this->smem_write_ + row_0, tmp0);
+-                fmha::sts(this->smem_write_ + row_1, tmp1);
++                fmha::sts(this->smem_write_ + row_0, tmp0, base_smem_);
++                fmha::sts(this->smem_write_ + row_1, tmp1, base_smem_);
+             }
+ 
+             // Cancel the previous XOR of 1 + swizzle the write pointer using a XOR of 32B or 64B.
+@@ -1126,8 +1169,9 @@ struct Smem_tile_mma {
+     enum { WARPS_K = Cta_tile::WARPS_K };
+ 
+     static_assert(WARPS_K == 1);
+-    inline __device__ Smem_tile_mma(char *smem, int tidx) {
+-        smem_ = __nvvm_get_smem_pointer(smem);
++    inline __device__ Smem_tile_mma(char *smem, int tidx, char *base_smem) {
++        base_smem_ = base_smem;
++        smem_ = reinterpret_cast<uint32_t>(smem); //__nvvm_get_smem_pointer(smem);
+ 
+         int write_col, write_row;
+         static_assert(WARPS_M == 1 && (WARPS_N == 4 || WARPS_N == 8) || (WARPS_M == 4 || WARPS_N == 8) || WARPS_N == 1);
+@@ -1149,15 +1193,16 @@ struct Smem_tile_mma {
+         for( int mi = 0; mi < M; mi++ ) {
+             for( int ni = 0; ni < N; ni++ ) {
+                 size_t offset = write_offset_ + mi * WARPS_M * 16 * BYTES_PER_ROW + ni * WARPS_N * 16 * BYTES_PER_ELT;
+-                fmha::sts(smem_ + offset + 0 * BYTES_PER_ROW, regs[mi][ni].x);
+-                fmha::sts(smem_ + offset + 8 * BYTES_PER_ROW, regs[mi][ni].z);
++                fmha::sts(smem_ + offset + 0 * BYTES_PER_ROW, regs[mi][ni].x, base_smem_);
++                fmha::sts(smem_ + offset + 8 * BYTES_PER_ROW, regs[mi][ni].z, base_smem_);
+                 offset ^= 4 * BYTES_PER_STS;
+-                fmha::sts(smem_ + offset + 0 * BYTES_PER_ROW, regs[mi][ni].y);
+-                fmha::sts(smem_ + offset + 8 * BYTES_PER_ROW, regs[mi][ni].w);
++                fmha::sts(smem_ + offset + 0 * BYTES_PER_ROW, regs[mi][ni].y, base_smem_);
++                fmha::sts(smem_ + offset + 8 * BYTES_PER_ROW, regs[mi][ni].w, base_smem_);
+             }
+         }
+     }
+ 
++    char *base_smem_;
+     uint32_t smem_;
+     uint32_t write_offset_;
+     uint32_t warp_m;
+@@ -1174,8 +1219,8 @@ struct Smem_tile_mma_transposed : public Base {
+     enum { WARPS_N = Base::WARPS_N };
+     static_assert(WARPS_M == 1 && (WARPS_N == 4 || WARPS_N == 8));
+     using Fragment = typename Base::Fragment;
+-    inline __device__ Smem_tile_mma_transposed(char *smem, int tidx) : Base(smem, tidx) {
+-
++    inline __device__ Smem_tile_mma_transposed(char *smem, int tidx, char *base_smem) : Base(smem, tidx, base_smem) {
++        base_smem_ = base_smem;
+         static_assert(WARPS_M == 1 && (WARPS_N == 4 || WARPS_N == 8));
+         int read_row, read_col;
+         read_row = (tidx & 0x0f);
+@@ -1192,7 +1237,15 @@ struct Smem_tile_mma_transposed : public Base {
+             for( int ni = 0; ni < N; ni++ ) {
+                 size_t offset = read_offset_ + mi * WARPS_M * 16 * BYTES_PER_ROW + ni * WARPS_N * 16 * BYTES_PER_ELT;
+                 uint4 dst;
+-                fmha::ldsmt(dst, this->smem_ + offset);
++                // fmha::ldsmt(dst, this->smem_ + offset);
++
++                uint32_t ptr = this->smem_ + offset;
++
++                lds(dst.x, (ptr     ) + 0*BYTES_PER_ROW, base_smem_);
++                lds(dst.y, (ptr     ) + 4*BYTES_PER_ROW, base_smem_);
++                lds(dst.z, (ptr ^ 32) + 0*BYTES_PER_ROW, base_smem_);
++                lds(dst.w, (ptr ^ 32) + 4*BYTES_PER_ROW, base_smem_);
++
+                 frag[mi][ni].reg(0) = dst.x;
+                 frag[mi][ni].reg(1) = dst.z;  // Fragment A regs col major!
+                 frag[mi][ni].reg(2) = dst.y;
+@@ -1201,6 +1254,7 @@ struct Smem_tile_mma_transposed : public Base {
+         }
+     }
+ 
++    char *base_smem_;
+     uint32_t read_offset_;
+ };
+ 
+@@ -1220,7 +1274,8 @@ struct Smem_tile_mma_epilogue : public Base {
+     
+     using Acc = fmha::Fragment_accumulator;
+ 
+-    inline __device__ Smem_tile_mma_epilogue(char *smem, int tidx) : Base(smem, tidx) {
++    inline __device__ Smem_tile_mma_epilogue(char *smem, int tidx, char *base_smem) : Base(smem, tidx, base_smem) {
++        base_smem_ = base_smem;
+         const int read_row = tidx / THREADS_PER_ROW;
+         int read_col = tidx % THREADS_PER_ROW;
+         read_col ^= (read_row & 0x07);
+@@ -1230,7 +1285,7 @@ struct Smem_tile_mma_epilogue : public Base {
+     inline __device__ void load(uint4 (&data)[NUM_LDS]) {
+         for( int ii = 0; ii < NUM_LDS; ii++ ) {
+             size_t offset = read_offset_ + ii * ROWS_PER_LDS * BYTES_PER_ROW;
+-            fmha::lds(data[ii], this->smem_ + offset);
++            fmha::lds(data[ii], this->smem_ + offset, base_smem_);
+         }
+     }
+ 
+@@ -1257,11 +1312,11 @@ struct Smem_tile_mma_epilogue : public Base {
+                 uint32_t w = fmha::float2_to_half2(tmp12, tmp13);
+      
+                 size_t offset = (this->write_offset_ ^ (ni * 32)) + mi * WARPS_M * 16 * BYTES_PER_ROW;
+-                fmha::sts(this->smem_ + offset + 0 * BYTES_PER_ROW, x);
+-                fmha::sts(this->smem_ + offset + 8 * BYTES_PER_ROW, z);
++                fmha::sts(this->smem_ + offset + 0 * BYTES_PER_ROW, x, base_smem_);
++                fmha::sts(this->smem_ + offset + 8 * BYTES_PER_ROW, z, base_smem_);
+                 offset ^= 4 * Base::BYTES_PER_STS;
+-                fmha::sts(this->smem_ + offset + 0 * BYTES_PER_ROW, y);
+-                fmha::sts(this->smem_ + offset + 8 * BYTES_PER_ROW, w);
++                fmha::sts(this->smem_ + offset + 0 * BYTES_PER_ROW, y, base_smem_);
++                fmha::sts(this->smem_ + offset + 8 * BYTES_PER_ROW, w, base_smem_);
+             }
+         }
+     }
+@@ -1271,15 +1326,16 @@ struct Smem_tile_mma_epilogue : public Base {
+         for( int mi = 0; mi < M; mi++ ) {
+             for( int ni = 0; ni < N; ni++ ) {
+                 size_t offset = (this->write_offset_ ^ (ni * 32)) + mi * WARPS_M * 16 * BYTES_PER_ROW;
+-                fmha::sts(this->smem_ + offset + 0 * BYTES_PER_ROW, regs[mi][ni].x);
+-                fmha::sts(this->smem_ + offset + 8 * BYTES_PER_ROW, regs[mi][ni].z);
++                fmha::sts(this->smem_ + offset + 0 * BYTES_PER_ROW, regs[mi][ni].x, base_smem_);
++                fmha::sts(this->smem_ + offset + 8 * BYTES_PER_ROW, regs[mi][ni].z, base_smem_);
+                 offset ^= 4 * Base::BYTES_PER_STS;
+-                fmha::sts(this->smem_ + offset + 0 * BYTES_PER_ROW, regs[mi][ni].y);
+-                fmha::sts(this->smem_ + offset + 8 * BYTES_PER_ROW, regs[mi][ni].w);
++                fmha::sts(this->smem_ + offset + 0 * BYTES_PER_ROW, regs[mi][ni].y, base_smem_);
++                fmha::sts(this->smem_ + offset + 8 * BYTES_PER_ROW, regs[mi][ni].w, base_smem_);
+             }
+         }
+     }
+ 
++    char *base_smem_;
+     uint32_t read_offset_;
+ };
+ 
+diff --git a/apex/contrib/csrc/fmha/src/fmha/utils.h b/apex/contrib/csrc/fmha/src/fmha/utils.h
+index bedba0e..581458e 100644
+--- a/apex/contrib/csrc/fmha/src/fmha/utils.h
++++ b/apex/contrib/csrc/fmha/src/fmha/utils.h
+@@ -37,6 +37,18 @@ extern "C" __device__ uint32_t __nvvm_get_smem_pointer(void *ptr);
+ 
+ namespace fmha {
+ 
++inline unsigned int nextPowerOfTwo(unsigned int v)
++{
++    v--;
++    v |= v >> 1;
++    v |= v >> 2;
++    v |= v >> 4;
++    v |= v >> 8;
++    v |= v >> 16;
++    v++;
++    return v;
++}
++
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+ struct Row {};  
+@@ -753,31 +765,26 @@ inline __device__ void ldg(uint4 (&fetch)[N], const void* (&ptrs)[N], uint32_t (
+ //
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+-inline __device__ void lds(uint16_t &dst, uint32_t ptr) {
+-    asm volatile("ld.shared.b16 %0, [%1];\n" : "=h"(dst) : "r"(ptr));
++inline __device__ void lds(uint16_t &dst, uint32_t ptr, char *gsmem) {
++    ldg(dst, gsmem + ptr);
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+-inline __device__ void lds(uint32_t &dst, uint32_t ptr) {
+-    asm volatile("ld.shared.b32 %0, [%1];\n" : "=r"(dst) : "r"(ptr));
++inline __device__ void lds(uint32_t &dst, uint32_t ptr, char *gsmem) {
++    ldg(dst, gsmem + ptr);
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+-inline __device__ void lds(uint2 &dst, uint32_t ptr) {
+-    asm volatile("ld.shared.v2.b32 {%0, %1}, [%2];\n" : "=r"(dst.x), "=r"(dst.y) : "r"(ptr));
++inline __device__ void lds(uint2 &dst, uint32_t ptr, char *gsmem) {
++    ldg(dst, gsmem + ptr);
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+-inline __device__ void lds(uint4 &dst, uint32_t ptr) {
+-    asm volatile("ld.shared.v4.b32 {%0, %1, %2, %3}, [%4];\n"
+-        : "=r"(dst.x)
+-        , "=r"(dst.y)
+-        , "=r"(dst.z)
+-        , "=r"(dst.w)
+-        :  "r"(ptr));
++inline __device__ void lds(uint4 &dst, uint32_t ptr, char *gsmem) {
++    ldg(dst, gsmem + ptr);
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+@@ -786,57 +793,68 @@ inline __device__ void lds(uint4 &dst, uint32_t ptr) {
+ //
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+-inline __device__ void ldsm(uint32_t &dst, uint32_t ptr) {
+-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 730
+-    asm volatile("ldmatrix.sync.aligned.m8n8.x1.shared.b16 {%0}, [%1];\n"
+-        : "=r"(dst) : "r"(ptr));
+-#endif
+-}
++// inline __device__ void lsdm_copy_x1()
++// {
++//     int tidx = threadIdx.x;
++//     const int WARP_SIZE = 32;
++//     int warp = tidx / WARP_SIZE;
++//     int lane = tidx % WARP_SIZE;
+ 
+-////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+-inline __device__ void ldsmt(uint32_t &dst, uint32_t ptr) {
+-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 730
+-    asm volatile("ldmatrix.sync.aligned.m8n8.x1.trans.shared.b16 {%0}, [%1];\n"
+-        : "=r"(dst) : "r"(ptr));
+-#endif
+-}
++// }
+ 
+-////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+-inline __device__ void ldsm(uint2 &dst, uint32_t ptr) {
+-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 730
+-    asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0, %1}, [%2];\n"
+-        : "=r"(dst.x), "=r"(dst.y) : "r"(ptr));
+-#endif
+-}
++// inline __device__ void ldsm(uint32_t &dst, uint32_t ptr, char *gsmem) {
++// // #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 730
++// //     asm volatile("ldmatrix.sync.aligned.m8n8.x1.shared.b16 {%0}, [%1];\n"
++// //         : "=r"(dst) : "r"(ptr));
++// // #endif
++// }
+ 
+-////////////////////////////////////////////////////////////////////////////////////////////////////
++// ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+-inline __device__ void ldsmt(uint2 &dst, uint32_t ptr) {
+-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 730
+-    asm volatile("ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {%0, %1}, [%2];\n"
+-        : "=r"(dst.x), "=r"(dst.y) : "r"(ptr));
+-#endif
+-}
++// inline __device__ void ldsmt(uint32_t &dst, uint32_t ptr, char *gsmem) {
++// // #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 730
++// //     asm volatile("ldmatrix.sync.aligned.m8n8.x1.trans.shared.b16 {%0}, [%1];\n"
++// //         : "=r"(dst) : "r"(ptr));
++// // #endif
++// }
+ 
+-////////////////////////////////////////////////////////////////////////////////////////////////////
++// ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+-inline __device__ void ldsm(uint4 &dst, uint32_t ptr) {
+-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 730
+-    asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0, %1, %2, %3}, [%4];\n"
+-        : "=r"(dst.x), "=r"(dst.y), "=r"(dst.z), "=r"(dst.w) : "r"(ptr));
+-#endif
+-}
++// inline __device__ void ldsm(uint2 &dst, uint32_t ptr, char *gsmem) {
++// // #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 730
++// //     asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0, %1}, [%2];\n"
++// //         : "=r"(dst.x), "=r"(dst.y) : "r"(ptr));
++// // #endif
++// }
+ 
+-////////////////////////////////////////////////////////////////////////////////////////////////////
++// ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+-inline __device__ void ldsmt(uint4 &dst, uint32_t ptr) {
+-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 730
+-    asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0, %1, %2, %3}, [%4];\n"
+-        : "=r"(dst.x), "=r"(dst.y), "=r"(dst.z), "=r"(dst.w) : "r"(ptr));
+-#endif
+-}
++// inline __device__ void ldsmt(uint2 &dst, uint32_t ptr, char *gsmem) {
++// // #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 730
++// //     asm volatile("ldmatrix.sync.aligned.m8n8.x2.trans.shared.b16 {%0, %1}, [%2];\n"
++// //         : "=r"(dst.x), "=r"(dst.y) : "r"(ptr));
++// // #endif
++// }
++
++// ////////////////////////////////////////////////////////////////////////////////////////////////////
++
++// inline __device__ void ldsm(uint4 &dst, uint32_t ptr, char *gsmem) {
++// // #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 730
++// //     asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0, %1, %2, %3}, [%4];\n"
++// //         : "=r"(dst.x), "=r"(dst.y), "=r"(dst.z), "=r"(dst.w) : "r"(ptr));
++// // #endif
++// }
++
++// ////////////////////////////////////////////////////////////////////////////////////////////////////
++
++// inline __device__ void ldsmt(uint4 &dst, uint32_t ptr, char *gsmem) {
++// // #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 730
++// //     asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0, %1, %2, %3}, [%4];\n"
++// //         : "=r"(dst.x), "=r"(dst.y), "=r"(dst.z), "=r"(dst.w) : "r"(ptr));
++// // #endif
++// }
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ //
+@@ -878,74 +896,64 @@ inline __device__ void stg(void *ptr, uint4 val) {
+ //
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+-inline __device__ void sts(uint32_t ptr, uint16_t val) {
+-    asm volatile("st.shared.b16 [%0], %1;\n" : : "r"(ptr), "h"(val));
++inline __device__ void sts(uint32_t ptr, uint16_t val, char *gsmem) {
++    stg(gsmem + ptr, val);
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+-inline __device__ void sts(uint32_t ptr, uint32_t val) {
+-    asm volatile("st.shared.b32 [%0], %1;\n" : : "r"(ptr), "r"(val));
++inline __device__ void sts(uint32_t ptr, uint32_t val, char *gsmem) {
++    stg(gsmem + ptr, val);
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+-inline __device__ void sts(uint32_t ptr, uint2 val) {
+-    asm volatile("st.shared.v2.b32 [%0], {%1, %2};\n"
+-        :
+-        : "r"(ptr)
+-        , "r"(val.x)
+-        , "r"(val.y));
++inline __device__ void sts(uint32_t ptr, uint2 val, char *gsmem) {
++    stg(gsmem + ptr, val);
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+-inline __device__ void sts(uint32_t ptr, uint4 val) {
+-    asm volatile("st.shared.v4.b32 [%0], {%1, %2, %3, %4};\n"
+-        :
+-        : "r"(ptr)
+-        , "r"(val.x)
+-        , "r"(val.y)
+-        , "r"(val.z)
+-        , "r"(val.w));
++inline __device__ void sts(uint32_t ptr, uint4 val, char *gsmem) {
++    stg(gsmem + ptr, val);
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+ template< typename Data_type, int N >
+-inline __device__ void sts_(uint32_t (&ptrs)[N], const Data_type (&data)[N]) {
++inline __device__ void sts_(uint32_t (&ptrs)[N], const Data_type (&data)[N], char *gsmem) {
+     #pragma unroll
+     for( int ii = 0; ii < N; ++ii ) {
+-        sts(ptrs[ii], data[ii]);
++        sts(ptrs[ii], data[ii], gsmem);
+     }
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+ template< int N >
+-inline __device__ void sts(uint32_t (&ptrs)[N], const uint16_t (&data)[N]) {
+-    sts_<uint16_t, N>(ptrs, data);
++inline __device__ void sts(uint32_t (&ptrs)[N], const uint16_t (&data)[N], char *gsmem) {
++    sts_<uint16_t, N>(ptrs, data, gsmem);
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+ template< int N >
+-inline __device__ void sts(uint32_t (&ptrs)[N], const uint32_t (&data)[N]) {
+-    sts_<uint32_t, N>(ptrs, data);
++inline __device__ void sts(uint32_t (&ptrs)[N], const uint32_t (&data)[N], char *gsmem) {
++    sts_<uint32_t, N>(ptrs, data, gsmem);
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+ template< int N >
+-inline __device__ void sts(uint32_t (&ptrs)[N], const uint2 (&data)[N]) {
+-    sts_<uint2, N>(ptrs, data);
++inline __device__ void sts(uint32_t (&ptrs)[N], const uint2 (&data)[N], char *gsmem) {
++    sts_<uint2, N>(ptrs, data, gsmem);
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+ template< int N >
+-inline __device__ void sts(uint32_t (&ptrs)[N], const uint4 (&data)[N]) {
+-    sts_<uint4, N>(ptrs, data);
++inline __device__ void sts(uint32_t (&ptrs)[N], const uint4 (&data)[N], char *gsmem) {
++    sts_<uint4, N>(ptrs, data, gsmem);
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+@@ -1033,6 +1041,16 @@ __device__ inline void quad_allreduce(float (&dst)[M], float2 (&src)[M], Operato
+     quad_allreduce(dst, tmp, op);
+ }
+ 
++__device__ inline uint get_smid(void) {
++
++     uint ret;
++
++     asm("mov.u32 %0, %smid;" : "=r"(ret) );
++
++     return ret;
++
++}
++
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+ }  // namespace fmha
+diff --git a/apex/contrib/csrc/fmha/src/fmha_dgrad_fp16_512_64_kernel.sm80.cu b/apex/contrib/csrc/fmha/src/fmha_dgrad_fp16_512_64_kernel.sm80.cu
+index 735006c..7c3bc79 100644
+--- a/apex/contrib/csrc/fmha/src/fmha_dgrad_fp16_512_64_kernel.sm80.cu
++++ b/apex/contrib/csrc/fmha/src/fmha_dgrad_fp16_512_64_kernel.sm80.cu
+@@ -31,9 +31,11 @@
+ 
+ using Kernel_traits = FMHA_kernel_traits<512, 64, 16, 1, 8, 0x08u>;
+ 
+-extern "C" __global__ void fmha_dgrad_fp16_512_64_sm80_kernel(Fused_multihead_attention_fprop_params params) {
+-    fmha::compute_dv_1xN<Kernel_traits>(params);
+-    fmha::compute_dq_dk_1xN<Kernel_traits>(params);
++extern "C" __global__ void fmha_dgrad_fp16_512_64_sm80_kernel(Fused_multihead_attention_fprop_params params,
++                                           char* gsmem = nullptr,
++                                           int   gsmem_smstride = 0) {
++    fmha::compute_dv_1xN<Kernel_traits>(params, gsmem, gsmem_smstride);
++    fmha::compute_dq_dk_1xN<Kernel_traits>(params, gsmem, gsmem_smstride);
+ }
+ 
+ template<int CHUNKS>
+@@ -60,11 +62,22 @@ void run_fmha_dgrad_fp16_512_64_sm80(const Fused_multihead_attention_fprop_param
+     constexpr int smem_size = std::max(smem_size_dv, smem_size_dq_dk);
+ 
+     if( smem_size >= 48 * 1024 ) {
+-        FMHA_CHECK_CUDA(cudaFuncSetAttribute(
+-            fmha_dgrad_fp16_512_64_sm80_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
++        // FMHA_CHECK_CUDA(cudaFuncSetAttribute(
++        //     fmha_dgrad_fp16_512_64_sm80_kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+     }
++
++    const int sm_count = 100; //launch_params.props->multiProcessorCount;
++
++    int smem_size2 = fmha::nextPowerOfTwo(smem_size);
++    int total_gsmmemory_needed = sm_count * smem_size2;
++    void* gsmem = nullptr;
++
++    FMHA_CHECK_CUDA(cudaMalloc(&gsmem, total_gsmmemory_needed));
++
+     dim3 grid(params.h, params.b);
+-    fmha_dgrad_fp16_512_64_sm80_kernel<<<grid, Kernel_traits::THREADS, smem_size, stream>>>(params);
++    fmha_dgrad_fp16_512_64_sm80_kernel<<<grid, Kernel_traits::THREADS, 40*1024, stream>>>(params, (char*)gsmem, smem_size2);
++
++    FMHA_CHECK_CUDA(cudaFree(gsmem));
+ }
+ 
+ void run_fmha_dgrad_fp16_512_64_sm80_nl(const Fused_multihead_attention_fprop_params &params, const int num_chunks, cudaStream_t stream) {
+diff --git a/apex/contrib/csrc/fmha/src/fmha_dgrad_kernel_1xN_reload.h b/apex/contrib/csrc/fmha/src/fmha_dgrad_kernel_1xN_reload.h
+index 3c4b817..1b9bfd3 100644
+--- a/apex/contrib/csrc/fmha/src/fmha_dgrad_kernel_1xN_reload.h
++++ b/apex/contrib/csrc/fmha/src/fmha_dgrad_kernel_1xN_reload.h
+@@ -30,13 +30,19 @@
+ #include "fmha_kernel.h"
+ #include <fmha/kernel_traits.h>
+ #include <fmha/gemm.h>
++#include <fmha/utils.h>
+ 
+ namespace fmha {
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+ template<typename Kernel_traits, typename Params>
+-inline __device__ void compute_dv_1xN(const Params &params) {
++inline __device__ void compute_dv_1xN(const Params &params, char *gsmem = nullptr, int gsmem_smstride = 0) {
++
++    uint smid = get_smid();
++    gsmem += smid * gsmem_smstride;
++
++    __syncthreads();
+ 
+     // The description of the CTA tile for the 1st batched GEMM.
+     using Cta_tile_p = typename Kernel_traits::Cta_tile_p;
+@@ -88,7 +94,8 @@ inline __device__ void compute_dv_1xN(const Params &params) {
+     using Gmem_tile_do = typename Kernel_traits::Gmem_tile_do;
+ 
+     // Shared memory.
+-    extern __shared__ char smem_[];
++    // extern __shared__ char smem_[];
++    char* smem_ = 0;
+ 
+     // The block index for the batch.
+     const int bidb = blockIdx.y;
+@@ -105,14 +112,14 @@ inline __device__ void compute_dv_1xN(const Params &params) {
+     // Allocate the global memory tile loader for Q.
+     Gmem_tile_do gmem_q(params, binfo, tidx);  // treating dout as Q
+     // Allocate the shared memory tile loader for Q.
+-    Smem_tile_q smem_q(&smem_[0], tidx);
+-    Smem_tile_qt smem_qt(&smem_[0], tidx);
+-    Smem_tile_st smem_s(&smem_[Smem_tile_q::BYTES_PER_TILE + Smem_tile_k::BYTES_PER_TILE], tidx);
++    Smem_tile_q smem_q(&smem_[0], tidx, gsmem);
++    Smem_tile_qt smem_qt(&smem_[0], tidx, gsmem);
++    Smem_tile_st smem_s(&smem_[Smem_tile_q::BYTES_PER_TILE + Smem_tile_k::BYTES_PER_TILE], tidx, gsmem);
+ 
+     // Allocate the global memory tile loader for K.
+     Gmem_tile_k gmem_k(params, 2, binfo, tidx);  // treating V as K
+     // Allocate the shared memory tile loader for K.
+-    Smem_tile_k smem_k(&smem_[Smem_tile_q::BYTES_PER_TILE], tidx);
++    Smem_tile_k smem_k(&smem_[Smem_tile_q::BYTES_PER_TILE], tidx, gsmem);
+ 
+     // Trigger the loads for Q.
+     gmem_q.load(smem_q);
+@@ -146,7 +153,7 @@ inline __device__ void compute_dv_1xN(const Params &params) {
+     // Create the object to do the softmax.
+     using Softmax = fmha::Softmax<Cta_tile_p, Kernel_traits>;
+     Softmax softmax(
+-        params, &smem_[Smem_tile_q::BYTES_PER_TILE + Smem_tile_st::BYTES_PER_TILE + Smem_tile_k::BYTES_PER_TILE], bidb, tidx);
++        params, &gsmem[Smem_tile_q::BYTES_PER_TILE + Smem_tile_st::BYTES_PER_TILE + Smem_tile_k::BYTES_PER_TILE], bidb, tidx);
+ 
+     enum { THREADS_PER_ROW = 32 };
+     enum { M = Mma_tile_p::MMAS_M };
+@@ -295,7 +302,7 @@ inline __device__ void compute_dv_1xN(const Params &params) {
+     }  // Outer loop over the sequence length.
+ 
+     // Epilogue swizzle for dV
+-    Smem_tile_dv smem_dv(&smem_[Kernel_traits::Smem_tile_q::BYTES_PER_TILE], tidx);
++    Smem_tile_dv smem_dv(&smem_[Kernel_traits::Smem_tile_q::BYTES_PER_TILE], tidx, gsmem);
+     smem_dv.store(acc_dv);
+ 
+     __syncthreads();
+@@ -310,7 +317,12 @@ inline __device__ void compute_dv_1xN(const Params &params) {
+ }
+ 
+ template<typename Kernel_traits, typename Params>
+-inline __device__ void compute_dq_dk_1xN(const Params &params) {
++inline __device__ void compute_dq_dk_1xN(const Params &params, char *gsmem = nullptr, int gsmem_smstride = 0) {
++
++    uint smid = get_smid();
++    gsmem += smid * gsmem_smstride;
++
++    __syncthreads();
+ 
+     // The description of the CTA tile for the 1st batched GEMM.
+     using Cta_tile_p = typename Kernel_traits::Cta_tile_p;
+@@ -369,7 +381,8 @@ inline __device__ void compute_dq_dk_1xN(const Params &params) {
+     static_assert(M == Mma_tile_o::MMAS_M);
+     static_assert(N == Mma_tile_o::MMAS_K);
+     // Shared memory.
+-    extern __shared__ char smem_[];
++    // extern __shared__ char smem_[];
++    char* smem_ = 0;
+ 
+     // The block index for the batch.
+     const int bidb = blockIdx.y;
+@@ -387,19 +400,20 @@ inline __device__ void compute_dq_dk_1xN(const Params &params) {
+     // Allocate the global memory tile loader for Q.
+     Gmem_tile_q gmem_q(params, 0, binfo, tidx);
+     // Allocate the shared memory tile loader for Q.
+-    Smem_tile_q smem_q(&smem_[0], tidx);
+-    Smem_tile_qt smem_qt(&smem_[0], tidx);
+-    Smem_tile_st smem_s(&smem_[Smem_tile_q::BYTES_PER_TILE + Smem_tile_k::BYTES_PER_TILE + Smem_tile_o::BYTES_PER_TILE], tidx);
++    Smem_tile_q smem_q(&smem_[0], tidx, gsmem);
++    Smem_tile_qt smem_qt(&smem_[0], tidx, gsmem);
++    Smem_tile_st smem_s(&smem_[Smem_tile_q::BYTES_PER_TILE + Smem_tile_k::BYTES_PER_TILE + Smem_tile_o::BYTES_PER_TILE], tidx,
++        gsmem);
+ 
+     // Allocate the global memory tile loader for K.
+     Gmem_tile_k gmem_k(params, 1, binfo, tidx);
+     // Allocate the shared memory tile loader for K.
+-    Smem_tile_k smem_k(&smem_[Smem_tile_q::BYTES_PER_TILE], tidx);
++    Smem_tile_k smem_k(&smem_[Smem_tile_q::BYTES_PER_TILE], tidx, gsmem);
+ 
+     // Allocate the global memory tile loader for O.
+     Gmem_tile_o gmem_o(params, binfo, tidx);
+     // Allocate the shared memory tile loader for O. We use the same as K so be careful!!!
+-    Smem_tile_o smem_o(&smem_[Smem_tile_q::BYTES_PER_TILE + Smem_tile_k::BYTES_PER_TILE], tidx);
++    Smem_tile_o smem_o(&smem_[Smem_tile_q::BYTES_PER_TILE + Smem_tile_k::BYTES_PER_TILE], tidx, gsmem);
+ 
+     // Trigger the loads for Q.
+     gmem_q.load(smem_q);
+@@ -540,7 +554,7 @@ inline __device__ void compute_dq_dk_1xN(const Params &params) {
+     }  // Outer loop over the sequence length.
+ 
+     // Epilogue swizzle for dK
+-    Smem_tile_dk smem_dk(&smem_[0], tidx);
++    Smem_tile_dk smem_dk(&smem_[0], tidx, gsmem);
+     smem_dk.store(acc_dk);
+     __syncthreads();
+     uint4 dk_out[Smem_tile_dk::NUM_LDS];
+diff --git a/apex/contrib/csrc/fmha/src/fmha_dgrad_kernel_1xN_reload_nl.h b/apex/contrib/csrc/fmha/src/fmha_dgrad_kernel_1xN_reload_nl.h
+index 26776d4..f392bec 100644
+--- a/apex/contrib/csrc/fmha/src/fmha_dgrad_kernel_1xN_reload_nl.h
++++ b/apex/contrib/csrc/fmha/src/fmha_dgrad_kernel_1xN_reload_nl.h
+@@ -38,6 +38,7 @@ namespace fmha {
+ template<int CHUNKS, typename Kernel_traits, typename Params>
+ inline __device__ void compute_dv_1xN_nl(const Params &params) {
+ 
++#if 0
+     // The description of the CTA tile for the 1st batched GEMM.
+     using Cta_tile_p = typename Kernel_traits::Cta_tile_p;
+     // The description of the CTA tile for the 2nd batched GEMM.
+@@ -86,7 +87,8 @@ inline __device__ void compute_dv_1xN_nl(const Params &params) {
+     using Gmem_tile_do = typename Kernel_traits::Gmem_tile_do;
+ 
+     // Shared memory.
+-    extern __shared__ char smem_[];
++    // extern __shared__ char smem_[];
++    char* smem_ = 0;
+ 
+     // The block index for the chunk.
+     const int bidc = blockIdx.z;
+@@ -309,11 +311,13 @@ inline __device__ void compute_dv_1xN_nl(const Params &params) {
+     dv_params.h = params.h;
+     Gmem_tile_dv gmem_dv(dv_params, nl_traits.get_idx_dv(), binfo, tidx);
+     gmem_dv.store(dv_out);
++    #endif
+ }
+ 
+ template<int CHUNKS, typename Kernel_traits, typename Params>
+ inline __device__ void compute_dq_dk_1xN_nl(const Params &params) {
+ 
++#if 0
+     // The description of the CTA tile for the 1st batched GEMM.
+     using Cta_tile_p = typename Kernel_traits::Cta_tile_p;
+     using Cta_tile_o = typename Kernel_traits::Cta_tile_o;
+@@ -377,7 +381,8 @@ inline __device__ void compute_dq_dk_1xN_nl(const Params &params) {
+     static_assert(M == Mma_tile_o::MMAS_M);
+     static_assert(N == Mma_tile_o::MMAS_K);
+     // Shared memory.
+-    extern __shared__ char smem_[];
++    // extern __shared__ char smem_[];
++    char* smem_ = 0;
+ 
+     const int bidc = blockIdx.z;
+     // The block index for the batch.
+@@ -562,6 +567,8 @@ inline __device__ void compute_dq_dk_1xN_nl(const Params &params) {
+     dk_params.h = params.h;
+     Gmem_tile_dk gmem_dk(dk_params, nl_traits.get_idx_dk(), binfo, tidx);
+     gmem_dk.store(dk_out);
++
++#endif
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+diff --git a/apex/contrib/csrc/fmha/src/fmha_fprop_fp16_512_64_kernel.sm80.cu b/apex/contrib/csrc/fmha/src/fmha_fprop_fp16_512_64_kernel.sm80.cu
+index ebd6ca3..0ef8ee8 100644
+--- a/apex/contrib/csrc/fmha/src/fmha_fprop_fp16_512_64_kernel.sm80.cu
++++ b/apex/contrib/csrc/fmha/src/fmha_fprop_fp16_512_64_kernel.sm80.cu
+@@ -28,14 +28,18 @@
+ #include "fmha.h"
+ #include "fmha_fprop_kernel_1xN.h"
+ 
++#include <fmha/utils.h>
++
+ using Kernel_traits = FMHA_kernel_traits<512, 64, 16, 1, 8, 0x00u>;
+ 
+ template<bool Is_training>
+ __global__ 
+ void fmha_fprop_fp16_512_64_sm80_kernel(Fused_multihead_attention_fprop_params params,
+-                                           const int total_heads) {
++                                           const int total_heads, 
++                                           char* gsmem = nullptr,
++                                           int   gsmem_smstride = 0) {
+ 
+-    fmha::device_1xN<Kernel_traits, Is_training>(params, total_heads);
++    fmha::device_1xN<Kernel_traits, Is_training>(params, total_heads, gsmem, gsmem_smstride);
+ }
+ 
+ template<bool Is_training>
+@@ -59,16 +63,17 @@ void run_fmha_fp16_512_64_sm80_(Launch_params<Fused_multihead_attention_fprop_pa
+ 
+     fprintf(stderr, "shared memory needed: %d\n", smem_size);
+ 
+-    if( smem_size >= 48 * 1024 ) {
+-        FMHA_CHECK_CUDA(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
+-    }
++    // if( smem_size >= 48 * 1024 ) {
++    //     FMHA_CHECK_CUDA(cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, smem_size));
++    // }
+ 
+     const int sm_count = launch_params.props->multiProcessorCount;
+-    int ctas_per_sm;
+-    FMHA_CHECK_CUDA(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&ctas_per_sm, kernel, Kernel_traits::THREADS, smem_size));
+-    int total_ctas = sm_count * ctas_per_sm;
++    // int ctas_per_sm = 1; // TODO
++    // FMHA_CHECK_CUDA(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&ctas_per_sm, kernel, Kernel_traits::THREADS, smem_size));
+ 
+     const int heads_total = launch_params.params.b * launch_params.params.h;
++    int total_ctas = heads_total; //sm_count * ctas_per_sm;
++
+     if(configure) {
+ 
+         using Mma_tile_p = fmha::Hmma_tile<typename Kernel_traits::Cta_tile_p>;
+@@ -98,10 +103,21 @@ void run_fmha_fp16_512_64_sm80_(Launch_params<Fused_multihead_attention_fprop_pa
+         return;
+     }
+ 
++    int smem_size2 = fmha::nextPowerOfTwo(smem_size);
++    int total_gsmmemory_needed = sm_count * smem_size2;
++    void* gsmem = nullptr;
++
++    FMHA_CHECK_CUDA(cudaMalloc(&gsmem, total_gsmmemory_needed));
++
+     dim3 grid(total_ctas);
+-    kernel<<<grid, Kernel_traits::THREADS, smem_size, launch_params.stream>>>(
++    const int DEFAULT_SHMEM_SIZE = 40*1024;
++    kernel<<<grid, Kernel_traits::THREADS, DEFAULT_SHMEM_SIZE, launch_params.stream>>>(
+         launch_params.params,
+-        heads_total);
++        heads_total,
++        (char*)gsmem,
++        smem_size2);
++
++    FMHA_CHECK_CUDA(cudaFree(gsmem));
+ 
+     FMHA_CHECK_CUDA(cudaPeekAtLastError());
+ 
+diff --git a/apex/contrib/csrc/fmha/src/fmha_fprop_kernel_1xN.h b/apex/contrib/csrc/fmha/src/fmha_fprop_kernel_1xN.h
+index 5a040cf..0ac992e 100644
+--- a/apex/contrib/csrc/fmha/src/fmha_fprop_kernel_1xN.h
++++ b/apex/contrib/csrc/fmha/src/fmha_fprop_kernel_1xN.h
+@@ -51,9 +51,9 @@ struct Gemm_Q_K_base {
+ 
+     static constexpr int SMEM_BYTES_SOFTMAX = Cta_tile_p::M * Cta_tile_p::WARPS_N * sizeof(float) * 2;
+ 
+-    __device__ inline Gemm_Q_K_base(char * smem_ptr_q, char * smem_ptr_k, const int tidx) 
+-        : smem_q(smem_ptr_q, tidx)
+-        , smem_k(smem_ptr_k, tidx) {
++    __device__ inline Gemm_Q_K_base(char * smem_ptr_q, char * smem_ptr_k, const int tidx, char *base_smem) 
++        : smem_q(smem_ptr_q, tidx, base_smem)
++        , smem_k(smem_ptr_k, tidx, base_smem) {
+ 
+     }
+ 
+@@ -91,8 +91,8 @@ struct Gemm_Q_K : public Gemm_Q_K_base<Kernel_traits> {
+                                     + std::max((SHARE_SMEM_FOR_K_AND_V ? 1 : 2) * Smem_tile_k::BYTES_PER_TILE,
+                                                Smem_tile_o::BYTES_PER_TILE + Base::SMEM_BYTES_SOFTMAX);
+ 
+-    __device__ inline Gemm_Q_K(char * smem_, const int tidx) 
+-        : Base(smem_, smem_ + Smem_tile_q::BYTES_PER_TILE, tidx) {
++    __device__ inline Gemm_Q_K(char * smem_, const int tidx, char *base_smem) 
++        : Base(smem_, smem_ + Smem_tile_q::BYTES_PER_TILE, tidx, base_smem) {
+     }
+ 
+     __device__ inline void load_k(){
+@@ -149,8 +149,8 @@ struct Gemm_Q_K<Kernel_traits, false> : public Gemm_Q_K_base<Kernel_traits> {
+                                     + (SHARE_SMEM_FOR_K_AND_V ? 1 : 2) * Smem_tile_k::BYTES_PER_TILE 
+                                     + Smem_tile_o::BYTES_PER_TILE + Base::SMEM_BYTES_SOFTMAX;
+ 
+-    __device__ inline Gemm_Q_K(char * smem_, const int tidx) 
+-      : Base(smem_, smem_ + Smem_tile_q::BYTES_PER_TILE, tidx) {
++    __device__ inline Gemm_Q_K(char * smem_, const int tidx, char *base_smem) 
++      : Base(smem_, smem_ + Smem_tile_q::BYTES_PER_TILE, tidx, base_smem) {
+     }
+ 
+     __device__ inline void load_k(){
+@@ -186,7 +186,12 @@ constexpr size_t get_dynamic_smem_size(){
+ }
+ 
+ template<typename Kernel_traits, bool Is_training, typename Params, typename Prng>
+-inline __device__ void device_1xN_(const Params &params, const int bidb, const int bidh, const int begin, const int steps, Prng & ph) {
++inline __device__ void device_1xN_(const Params &params, const int bidb, const int bidh, const int begin, const int steps, Prng & ph, char* gsmem = nullptr, int gsmem_smstride = 0) {
++
++    uint smid = get_smid();
++    gsmem += smid * gsmem_smstride;
++
++    __syncthreads();
+ 
+ 
+     // The description of the CTA tile for the 1st batched GEMM.
+@@ -228,7 +233,8 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
+     enum { BITS_PER_ELT_S = sizeof(fmha::A_type) * 8 };
+ 
+     // Shared memory.
+-    extern __shared__ char smem_[];
++    // extern __shared__ char smem_[];
++    char* smem_ = 0;
+ 
+     // The thread index.
+     const int tidx = threadIdx.x;
+@@ -236,7 +242,7 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
+     const BlockInfoPadded<Kernel_traits::THREADS> binfo(params, bidb, bidh, tidx);
+     if( binfo.stop_early() ) return;
+ 
+-    Gemm1 gemm_q_k(smem_, tidx);
++    Gemm1 gemm_q_k(smem_, tidx, gsmem);
+     // Allocate the global memory tile loader for Q.
+     Gmem_tile_q gmem_q(params, 0, binfo, tidx);
+     // Allocate the global memory tile loader for O.
+@@ -260,10 +266,10 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
+     char *smem_v_ = &smem_[Gemm1::SMEM_OFFSET_V];
+     
+     // Allocate the shared memory tile loader for V. We use the same as K so be careful!!!
+-    Smem_tile_v smem_v(smem_v_, tidx);
++    Smem_tile_v smem_v(smem_v_, tidx, gsmem);
+ 
+     // Allocate the shared memory tile loader for O. We use the same as K so be careful!!!
+-    Smem_tile_o smem_o(&smem_[Gemm1::SMEM_OFFSET_O], tidx);
++    Smem_tile_o smem_o(&smem_[Gemm1::SMEM_OFFSET_O], tidx, gsmem);
+ 
+     // Trigger the loads for K.
+     gmem_k.load(gemm_q_k.smem_k);
+@@ -317,7 +323,7 @@ inline __device__ void device_1xN_(const Params &params, const int bidb, const i
+     gemm_q_k.load_k();
+ 
+     // Create the object to do the softmax.
+-    Softmax softmax(params, &smem_[Gemm1::SMEM_OFFSET_O + Smem_tile_o::BYTES_PER_TILE], bidb, tidx);
++    Softmax softmax(params, &gsmem[Gemm1::SMEM_OFFSET_O + Smem_tile_o::BYTES_PER_TILE], bidb, tidx);
+ 
+     // Load over the entire sequence length.
+     for( int l = 0; l < steps; l++ ) {
+@@ -510,7 +516,7 @@ inline __device__ void device_1xN(const Params &params,
+ ////////////////////////////////////////////////////////////////////////////////////////////////////
+ 
+ template<typename Kernel_traits, bool Is_training, typename Params>
+-inline __device__ void device_1xN(const Params &params, const int total_heads) {
++inline __device__ void device_1xN(const Params &params, const int total_heads, char* gsmem = nullptr, int gsmem_smstride = 0) {
+ 
+     const int tidx_global = blockIdx.x * gridDim.x + threadIdx.x;
+     auto seeds = at::cuda::philox::unpack(params.philox_args);
+@@ -520,7 +526,7 @@ inline __device__ void device_1xN(const Params &params, const int total_heads) {
+     for(int bidx = blockIdx.x; bidx < total_heads; bidx += gridDim.x){
+         const int bidh = bidx % params.h;
+         const int bidb = bidx / params.h;
+-        fmha::device_1xN_<Kernel_traits, Is_training>(params, bidb, bidh, 0, STEPS, ph);
++        fmha::device_1xN_<Kernel_traits, Is_training>(params, bidb, bidh, 0, STEPS, ph, gsmem, gsmem_smstride);
+         __syncthreads();
+     }
+ }
