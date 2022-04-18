@@ -20,3 +20,23 @@ task:
    reduced substantially memory on softmax backward (no tmp var, immediate free ctx.softmax_results). 
    1 in ctx, 1 - output grad, softmax in place ~ 2
    on forward - allocate (1 on ret, 1 from mult) ~ 2
+
+
+18.04.2022:
+fmha
+fwd:bwd (2048x10)
+
+py lean: 11ms:25ms
+
+fwd-block=256 bwd-block=256
+6:19ms
+
+no first block fmha (incorrect logic)
+6:13ms
+
+fwd-block=512 bwd-block=256
+4.6:19ms
+
+fwd-block=384 bwd-block=384
+5:13ms
+
