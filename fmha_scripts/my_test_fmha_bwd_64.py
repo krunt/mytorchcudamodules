@@ -100,7 +100,7 @@ def run_test(s, b):
 
 
 torch.cuda.cudart().cudaProfilerStart()
-run_test(1024, 8)
+run_test(384*3, 8)
 #run_test(4*384, 4)
 #run_test(512, 128)
 #run_test(1024, 32)
